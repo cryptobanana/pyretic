@@ -27,12 +27,12 @@
 ################################################################################
 
 from frenetic.lib import *
-from examples.learning_switch import learning_switch
+from examples.learning_switch import learn
 
 
 ### 50 ways to write your packet monitor ###
 
-@policy_decorator
+@dynamic
 def monitor_packets(self):
     @self.query(all_packets)
     def f(pkt):
@@ -40,7 +40,7 @@ def monitor_packets(self):
         print pkt
         print "---------------"
 
-@policy_decorator
+@dynamic
 def monitor_packets_less_decorated(self):
     def f(pkt):
         print "(less_decorated) I see packet:"
@@ -56,11 +56,11 @@ def monitor_packets_undecorated():
             print pkt
             print "---------------"
         self.query(all_packets)(f)
-    return policy_decorator(monitor_packets_undecorated_fn)
+    return dynamic(monitor_packets_undecorated_fn)
 
-@policy_decorator
+@dynamic
 def monitor_packets_explicit_bucket(self):
-    b = bucket()
+    b = packets()
     self.forwarding |= b
     @b.when
     def f(pkt):
@@ -69,7 +69,7 @@ def monitor_packets_explicit_bucket(self):
         print "---------------"
 
 def monitor_packets_lowest_level_syntax():
-    b = bucket()
+    b = packets()
     def f(pkt):
         print "(lowest_level_syntax) I see packet:"
         print pkt  
@@ -95,7 +95,7 @@ class monitor_packets_limit_by_src_dst(MutablePolicy):
         print "---------------"
         MutablePolicy.attach(self, network)
     
-@policy_decorator
+@dynamic
 def monitor_unique_packets(self):
     @self.query_unique(all_packets,['payload'])
     def f(pkt):
@@ -103,13 +103,13 @@ def monitor_unique_packets(self):
         print pkt
         print "---------------"
 
-@policy_decorator
+@dynamic
 def monitor_packet_count(self):
     @self.query_count(all_packets,3)
     def f(count):
         print "%s packets seen" % count
         
-@policy_decorator
+@dynamic
 def monitor_grouped_packet_count(self):
     group_by = ['srcmac','dstmac','switch','srcip','vlan_tos']
     @self.query_count(all_packets,4,group_by)
@@ -122,13 +122,13 @@ def monitor_grouped_packet_count(self):
 ### Topology monitoring ###
 
 
-@policy_decorator
-def monitor_topology(self):
-    @self.network._topology.notify
-    def f(topo):
-        print "------ monitor topology output start -------"
-        print topo
-        print "------ monitor topology output end - -------"
+# @dynamic
+# def monitor_topology(self):
+#     @self.network._topology.notify
+#     def f(topo):
+#         print "------ monitor topology output start -------"
+#         print topo
+#         print "------ monitor topology output end - -------"
 
 
 ### Examples ###
@@ -141,14 +141,12 @@ all_monitor_modules =                           \
     | monitor_packets_lowest_level_syntax()     \
     | monitor_packets_limit_by_src_dst(limit=3) \
     | monitor_unique_packets()                  \
-    | monitor_topology()                        \
     | monitor_grouped_packet_count()            \
-    | learning_switch()
+    | dynamic(learn)()
 
 summary_modules =                     \
-    monitor_topology()                \
-    | monitor_grouped_packet_count()  \
-    | learning_switch()
+    monitor_grouped_packet_count()  \
+    | dynamic(learn)()
 
 lowest_level_syntax =                      \
     monitor_packets_lowest_level_syntax()  \
