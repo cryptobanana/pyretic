@@ -61,7 +61,7 @@ def monitor_packets_undecorated():
 @policy_decorator
 def monitor_packets_explicit_bucket(self):
     b = bucket()
-    self.policy |= b
+    self.forwarding |= b
     @b.when
     def f(pkt):
         print "(explicit_bucket) I see packet:"

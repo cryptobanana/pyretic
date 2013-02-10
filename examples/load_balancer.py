@@ -86,14 +86,14 @@ def lb(self,p,R,H):
         self.H = update(H,stats)
         b = balance(R,self.H)
         print "rebalance %s" % b
-        self.policy = rewrite(b,p)
+        self.forwarding = rewrite(b,p)
 
     self.H = H
     q = counts(5,['srcip'])
     q.when(rebalance)
 #    self.policy = rewrite(balance(R,H),p) 
 #    self.queries.append(match(dstip=p)[q])
-    self.policy = rewrite(balance(R,H),p) | match(dstip=p)[q]
+    self.forwarding = rewrite(balance(R,H),p) | match(dstip=p)[q]
 
 
 def main(clients, servers):

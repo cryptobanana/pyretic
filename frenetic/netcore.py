@@ -1059,7 +1059,9 @@ class MutablePolicy(DerivedPolicy):
     ### init : unit -> unit
     def __init__(self):
         self.networks = set()
-        self.policy = drop
+        self._forwarding = drop
+        self._queries = []
+        self.sync_policy()
         
     @property
     def policy(self):
@@ -1077,6 +1079,21 @@ class MutablePolicy(DerivedPolicy):
                 old_policy.detach(network)
             policy.attach(network)
 
+    @property
+    def forwarding(self):
+        try:
+            return self._forwarding
+        except:
+            return None
+
+    @forwarding.setter
+    def forwarding(self, fpol):
+        self._forwarding = fpol
+        self.sync_policy()
+
+    def sync_policy(self):
+        self.policy = self.forwarding | parallel(self._queries)
+        
     def attach(self, network):
         if network not in self.networks:
             self.networks.add(network)
@@ -1086,30 +1103,34 @@ class MutablePolicy(DerivedPolicy):
         assert network in self.networks
         self.networks.remove(network)
         DerivedPolicy.detach(self, network)
+
+    def add_query(self, qpol):
+        self._queries.append(qpol)
+        self.sync_policy()
         
     ### query : Predicate -> ((Packet -> unit) -> (Packet -> unit))
     def query(self, pred=all_packets):
         b = packets()
-        self.policy |= pred[b]
+        self.add_query(pred[b])
         return b.when
 
     ### query_limit : Predicate -> int -> List String -> ((Packet -> unit) -> (Packet -> unit))
     def query_limit(self, pred=all_packets, limit=None, fields=[]):
         if limit:
-            b = packets(limit,fields)
-            self.policy |= pred[b]
+            b = packets(limit, fields)
+            self.add_query(pred[b])
             return b.when
         else:
             return self.query(pred)
 
     ### query_unique : Predicate -> List String -> ((Packet -> unit) -> (Packet -> unit))
     def query_unique(self, pred=all_packets, fields=[]):
-        return self.query_limit(pred,1,fields)
+        return self.query_limit(pred, 1, fields)
 
     ### query_count : Predicate -> int -> List String -> ((Packet -> unit) -> (Packet -> unit))
     def query_count(self, pred=all_packets, interval=None, group_by=[]):
-        b = counts(interval,group_by)
-        self.policy |= pred[b]
+        b = counts(interval, group_by)
+        self.add_query(pred[b])
         return b.when
 
         

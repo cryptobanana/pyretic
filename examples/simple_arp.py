@@ -28,9 +28,9 @@
 
 from frenetic.lib import *
 
-@policy_decorator
+@dynamic
 def arp(self):
-    self.policy |= flood
+    self.forwarding |= flood
     
 main = arp()
 

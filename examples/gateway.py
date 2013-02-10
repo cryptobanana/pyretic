@@ -36,7 +36,6 @@
 
 from frenetic.lib import *
 
-from examples.learning_switch import learning_switch
 from examples.repeater import repeater
 from examples.hub import hub
 
@@ -154,10 +153,10 @@ def gateway_example():
             (match(switch=5) | match(switch=6) | match(switch=7) | match(switch=1002))[ hub ])
 
 
-@policy_decorator
+@dynamic
 def vgateway_example(self):
     ge = gateway_example()
-    self.policy = virtualize(ge, GatewayVirt(Recurse(self)))
+    self.forwarding = virtualize(ge, GatewayVirt(Recurse(self)))
 
 
 def main():
