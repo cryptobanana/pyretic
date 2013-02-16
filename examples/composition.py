@@ -29,26 +29,49 @@
 ##############################################################################################################################
 # TO TEST EXAMPLE                                                                                                            #
 # -------------------------------------------------------------------                                                        #
-# start mininet:  pyretic/mininet.sh --switch ovsk --bump_topo,1,1,1                                                         #
-# run controller: pox.py --no-cli pyretic/examples/renamer.py                                                                #
-# test:           h1 ping -c 1 10.0.0.100 (should work), h1 ping -c 1 hs2 (should not work)                                  #
+# start mininet:  ./pyretic/mininet.sh --switch ovsk --topo bump_clique,1,3,2                                                #
+# run controller: pox.py --no-cli pyretic/examples/composition.py --clients=3 --servers=2                                    #
+# test:           clients can only ping 10.0.0.100, servers cannot ping anyone                                               #
 ##############################################################################################################################
 
 from frenetic.lib import *
+from examples.learning_switch import learning_switch
+from examples.firewall import static_fw, fw
+from examples.load_balancer import static_lb, lb
+from virttopos.bfs import BFS
 
-def renamer(client_ip, instance_ip, service_ip):
-    service_to_client_pred = match(srcip=instance_ip, dstip=client_ip)
-    service_to_client_mod = modify(srcip=service_ip)
+def fw_lb_ls(clients, servers):
+    num_clients = int(clients)
+    num_servers = int(servers)
 
-    client_to_service_pred = match(srcip=client_ip, dstip=service_ip) 
-    client_to_service_mod = modify(dstip=instance_ip)
-  
-    pol = passthrough
-    pol -= service_to_client_pred | client_to_service_pred
-    pol |= service_to_client_pred[service_to_client_mod] | client_to_service_pred[client_to_service_mod]
-    return pol
+    print "clients %d" % num_clients
+    print "servers %d" % num_servers
 
-# RENAMES PACKETS TO/FROM 10.0.0.2/10.0.0.100 
-def main(service_ip='10.0.0.100', client_ip='10.0.0.1', instance_ip='10.0.0.2'):
-    from examples.hub import hub
-    return renamer(client_ip, instance_ip, service_ip) >> hub
+    # CALCULATE IPS
+    ip_prefix = '10.0.0.'
+    public_ip = ip_prefix + str(100)
+    print "public_ip = %s" % public_ip
+    
+    client_ips = [ip_prefix + str(i) for i in range(1, 1+num_clients)]
+    H = {c : 0 for c in client_ips}
+    R = [ip_prefix + str(i) for i in range(1+num_clients, 1+num_clients+num_servers)]
+    allowed = {(c,public_ip) for c in client_ips}
+    from_client = union([match(srcip=c) for c in client_ips])
+
+    alb = static_lb(public_ip,R,H)  
+    #alb = dynamic(lb)(public_ip,R,H)  
+    #afw = static_fw(allowed)
+    afw = dynamic(fw)(allowed)
+    return if_(from_client, afw >> alb, alb >> afw) >> learning_switch()
+
+        
+def main(clients,servers):
+    return fw_lb_ls(clients,servers) 
+
+## RUNNING ON ABSTRACTED NETWORK AS IN PAPER
+#    return virtualize(fw_lb_ls(clients,servers), BFS())  ## VIRTUALIZED!
+# CAN ALSO BE DONE BY RUNNING FROM COMMANDLINE
+# pox.py --no-cli pyretic/examples/virtualize.py --program=pyretic/examples/composition.py --clients=3 --servers=2 --virttopo=pyretic/virttopos/bfs.py
+
+
+

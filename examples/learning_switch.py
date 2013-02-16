@@ -38,6 +38,8 @@
 ############################################################################################################################
 
 from frenetic.lib import *
+from virttopos.bfs import BFS
+from virttopos.spanning_tree import SpanningTree
 
 ### NSDI PAPER VERSION ###
 def learn(self):
@@ -50,11 +52,11 @@ def learn(self):
 
     q = packets(1,['srcmac','switch'])
     q.when(update)
-#    self.queries.append(q)
-#    self.policy = flood 
     self.policy = flood | q
+
+def learning_switch():
+    return dynamic(learn)()
 
 
 def main():
     return dynamic(learn)()
-

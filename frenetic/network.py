@@ -88,10 +88,7 @@ class IP(object):
         return hash(self.to_bytes())    
 
     def __eq__(self,other):
-        try:
-            return self.bits == other.bits
-        except:
-            return False
+        return repr(self) == repr(other)
 
             
 class MAC(object):
@@ -147,10 +144,7 @@ class MAC(object):
         return hash(self.to_bytes())
 
     def __eq__(self,other):
-        try:
-            return self.bits == other.bits
-        except:
-            return False
+        return repr(self) == repr(other)
 
         
 ################################################################################
@@ -160,7 +154,7 @@ class MAC(object):
 class Packet(object):
     __slots__ = ["header"]
     
-    def __init__(self, state):
+    def __init__(self, state={}):
         self.header = util.frozendict(state)
 
     def available_fields(self):
@@ -248,7 +242,7 @@ class Port(object):
         return self.port_no == other.port_no
 
     def __repr__(self):
-        return "%d:config_up=%s:status_up=%s:linked_to=%s" % (self.port_no,self.config_down,self.status_down,self.linked_to)
+        return "%d:config_up=%s:status_up=%s:linked_to=%s" % (self.port_no,self.config,self.status,self.linked_to)
 
 
 
@@ -277,9 +271,12 @@ class Topology(nx.Graph):
             for s in self.nodes():
                 locs |= (self.egress_locations(s))
         else:
-            for port in self.node[switch]['ports'].values():
-                if port.possibly_up() and port.linked_to is None:
-                    locs.add(Location(switch,port.port_no))
+            try: 
+                for port in self.node[switch]['ports'].values():
+                    if port.possibly_up() and port.linked_to is None:
+                        locs.add(Location(switch,port.port_no))
+            except KeyError:
+                pass
         return locs
 
     def interior_locations(self,switch=None):
@@ -323,7 +320,7 @@ class Topology(nx.Graph):
                 pass
 
     ### TAKES A TRANSFORMED TOPOLOGY AND UPDATES ITS ATTRIBUTES
-    def reconcile_attributes(self,initial_topo):
+    def reconcile_attributes(self,initial_topo,new_egress=False):
         # REMOVE PORT ATTRIBUTES CORRESPONDING TO REMOVED EDGES
         for (s1,s2,data) in initial_topo.edges(data=True):
             try:
@@ -338,20 +335,24 @@ class Topology(nx.Graph):
                 for loc in to_remove:
                     try:
                         new_port_nos = self.node[loc.switch]['ports'].copy() 
-                        del new_port_nos[loc.port_no]
-                        self.node[loc.switch]['ports'] = new_port_nos
+                        if new_egress:
+                            new_port_nos[loc.port_no].linked_to = None
+                        else:
+                            del new_port_nos[loc.port_no]
+                            self.node[loc.switch]['ports'] = new_port_nos
                     except KeyError:
                         pass                # node removed
 
-    def remove_nodes_from(self,switches=[]):
-        self.remove_nodes_from(switches)
-        self.reconcile_attributes()
-        return self
+    def filter_nodes(self, switches=[]):
+        remove = [ s for s in self.nodes() if not s in switches] 
+        return self.filter_out_nodes(remove)
 
     def filter_out_nodes(self, switches=[]):
-        self_copy = self.copy()
-        return self_copy.remove_nodes_from(switches)
-        
+        filtered_copy = self.copy()
+        filtered_copy.remove_nodes_from(switches)
+        filtered_copy.reconcile_attributes(self,new_egress=True)
+        return filtered_copy
+
     @classmethod
     def difference(cls,topo1,topo2):
         try:

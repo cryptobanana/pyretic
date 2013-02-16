@@ -29,7 +29,7 @@
 ##############################################################################################################################
 # TO TEST EXAMPLE                                                                                                            #
 # -------------------------------------------------------------------                                                        #
-# start mininet:  pyretic/mininet.sh --topo linear,4                                                                 #
+# start mininet:  pyretic/mininet.sh --topo cycle,4,4                                                                        #
 # run controller: pox.py --no-cli pyretic/examples/arp.py                                                                    #
 # run pingall:    once or twice, clear a node's arp entry for one of its neighbors - e.g., h1 arp -d h2 - and ping           # 
 # test:           NO RESPONSE AVAILABLE message should only show up once for each end host IP address                        #
@@ -45,108 +45,111 @@ ARP_TYPE = 2054
 VERBOSE_LEVEL = 1
 ARP = match([('type',ARP_TYPE)])
 
-### THIS IS A BIT LAZY, WE COPY PACKET AND ONLY OVERRIDE NECESSARY FIELDS
-def send_response(network,pkt,switch,outport,dstip=None,dstmac=None):
-    response_packet = Packet(pkt.header)
-    response_packet = response_packet.pop('switch')
-    response_packet = response_packet.push(switch=switch)
-    response_packet = response_packet.push(outport=outport)
-    if not dstip is None:
-        response_packet = response_packet.pop('dstip')
-        response_packet = response_packet.push(dstip=dstip)
-        response_packet = response_packet.pop('dstmac')
-        response_packet = response_packet.push(dstmac=dstmac)
+def send_arp_response(network,switch,outport,srcip,srcmac,dstip,dstmac):
+    """Construct an arp packet from scratch and send"""
 
-    if response_packet['inport'] == outport:
-        fake_inports = [l.port_no for l in network.topology.interior_locations(switch)] 
-        response_packet = response_packet.pop('inport')
-        try:
-            response_packet = response_packet.push(inport=fake_inports[0])
-        except IndexError:
-            print "All ports on switch %s are currently reported as egress ports!\nWill try incrementing the inport.\n(bug in some switches does not allow packets to be sent out the same outport as they reportedly came in...)"
-            response_packet = response_packet.push(inport=outport+1)
+    rp = Packet()
+    rp = rp.push(protocol=2)
+    rp = rp.pushmany({'type' : 2054})
+    rp = rp.push(switch=switch)
+    rp = rp.push(outport=outport)
+    rp = rp.push(inport=outport+1)
+    rp = rp.push(srcip=srcip)
+    rp = rp.push(srcmac=srcmac)
+    rp = rp.push(dstip=dstip)
+    rp = rp.push(dstmac=dstmac)
+    rp = rp.push(payload='')
 
     if VERBOSE_LEVEL > 0:
         print "--------- INJECTING RESPONSE -----------"
         if VERBOSE_LEVEL > 1:
-            print response_packet
+            print rp
 
     # XXX
-    network.inject_packet(response_packet)
+    network.inject_packet(rp)
 
 
 ### USING STRING CASTING TO MAKE SURE PACKET FIELDS ACT LIKE PROPER DICT KEYS
 ### THIS IS A HACK AND SHOULD BE FIXED
-@policy_decorator
-def arp(self):
-    network = self.network
-    request_packets = {}
-    known_ips = {}
-    response_packets = {}
+@dynamic
+def arp(self,mac_of={}):
+    """Respond to arp request for any hosts in mac_of,
+       learn macs of unknown hosts"""
+
+    location_of = {}
     outstanding_requests = collections.defaultdict(dict)
+    this = self
 
     @self.query(ARP)
-    def f(pkt):
+    def handle_arp(pkt):
         switch = pkt['switch']
         inport = pkt['inport']
-        srcmac = pkt['srcmac']
         srcip  = pkt['srcip']
-        dstmac = str(pkt['dstmac'])
-        dstip  = str(pkt['dstip'])
+        srcmac = pkt['srcmac']
+        dstip  = pkt['dstip']
+        dstmac = pkt['dstmac']
+        opcode = pkt['protocol']
 
-        known_ips[str(srcip)] = Location(switch,inport)
+        # RECORD THE LOCATION AT WHICH THIS NODE IS ATTACHED TO THE NETWORK
+        if not srcip in location_of:
+            location_of[srcip] = Location(switch,inport)
+            
 
-        if dstmac == 'ff:ff:ff:ff:ff:ff':
-            request_packets[dstip] = pkt
+        # GET THE NETWORK OBJECT
+        network = None
+        for n in this.networks:
+            network = n
+            break
 
-            if dstip in response_packets:
+        # IF THIS PACKET IS A REQUEST
+        
+        if opcode == 1:
+            if dstip in mac_of:
                 if VERBOSE_LEVEL > 0:
                     print "RECEIVED REQUEST FOR %s FROM %s, RESPONSE AVAILABLE" % (dstip,srcip)
                     if VERBOSE_LEVEL > 1:
                         print pkt
-                response_pkt = response_packets[dstip]
-                send_response(network,response_pkt,switch,inport,srcip,srcmac)
+                send_arp_response(network,switch,inport,dstip,mac_of[dstip],srcip,srcmac)
             else:
                 if VERBOSE_LEVEL > 0:
                     print "RECEIVED REQUEST FOR %s FROM %s, NO RESPONSE AVAILABLE" % (dstip,srcip)
                     if VERBOSE_LEVEL > 1:
                         print pkt
 
-                outstanding_requests[str(srcip)][dstip] = True
+                # LEARN MAC
+                mac_of[srcip] = srcmac  
+
+                # FORWARD REQUEST OUT OF ALL EGRESS PORTS
+                outstanding_requests[srcip][dstip] = True
                 for loc in network.topology.egress_locations() - {Location(switch,inport)}:
                     # Can this just be send_response?
-                    request_packet = Packet(pkt.header)
-                    request_packet = request_packet.pop('switch')
-                    request_packet = request_packet.push(switch=loc.switch)
-                    request_packet = request_packet.push(outport=loc.port_no)
-                    
-                    if request_packet['inport'] == loc.port_no:
-                        fake_inports = [l.port_no for l in network.topology.interior_locations(loc.switch)] 
-                        request_packet = request_packet.pop('inport')
-                        try:
-                            request_packet = request_packet.push(inport=fake_inports[0])
-                        except IndexError:
-                            print "All ports on switch %s are currently reported as egress ports!\nWill try incrementing the inport.\n(bug in some switches does not allow packets to be sent out the same outport as they reportedly came in...)"
-                            request_packet = request_packet.push(inport=loc.port_no+1)
+                    rq = Packet(pkt.header)
+                    rq = rq.pop('switch')
+                    rq = rq.push(switch=loc.switch)
+                    rq = rq.push(outport=loc.port_no)
+                    if rq['inport'] == loc.port_no:
+                        rq = rq.push(inport=loc.port_no+1)
 
                     if VERBOSE_LEVEL > 0:
                         print "--------- INJECTING REQUEST -----------"
                         if VERBOSE_LEVEL > 1:
-                            print request_packet
+                            print rq
                             
-                    network.inject_packet(request_packet)
-        else:
+                    network.inject_packet(rq)
+
+        # THIS IS A RESPONSE THAT WE WILL ALSO LEARN FROM
+        elif opcode == 2:
             try:
-                del outstanding_requests[dstip][str(srcip)]
+                del outstanding_requests[dstip][srcip]
 
                 if VERBOSE_LEVEL > 0:
                     print "OUTSTANDING RESPONSE for %s to %s" % (srcip,dstip)
                     if VERBOSE_LEVEL > 1:
                         print pkt
 
-                response_packets[str(srcip)] = pkt
-                loc = known_ips[dstip]
-                send_response(network,pkt,loc.switch,loc.port_no)
+                mac_of[srcip] = srcmac
+                loc = location_of[dstip]
+                send_arp_response(network,loc.switch,loc.port_no,srcip,mac_of[srcip],dstip,mac_of[dstip])
             except:
 
                 if VERBOSE_LEVEL > 1:
@@ -154,6 +157,17 @@ def arp(self):
                     print pkt
                 pass
 
-main = learning_switch() - ARP | arp()
+def learn_arp():
+    return if_(ARP,arp(),learning_switch())
+
+def pre_specified_arp():
+    mac_of = { IP('10.0.0.'+str(i)) : MAC('00:00:00:00:00:0'+str(i)) for i in range(1,9) }
+    return if_(ARP,arp(mac_of),learning_switch())
+
+
+def main():
+    return learn_arp()
+#    return pre_specified_arp()
+
 
 

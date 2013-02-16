@@ -81,7 +81,7 @@ class POXBackend(revent.EventMixin):
             assert diff is not None, "use of vlan that pyretic didn't allocate! not allowed."
             return diff
 
-    def create_packet(self, switch, inport, data):
+    def packet_from_pox(self, switch, inport, data):
         h = {}
         h["switch"] = switch
         h["inport"] = inport
@@ -114,22 +114,55 @@ class POXBackend(revent.EventMixin):
                 h["dstport"] = p.code
         elif isinstance(p, packetlib.arp):
             if p.opcode <= 255:
+                h["type"] = 2054
                 h["protocol"] = p.opcode
                 h["srcip"] = net.IP(p.protosrc.toRaw())
                 h["dstip"] = net.IP(p.protodst.toRaw())
+
 
         h["payload"] = data
         
         packet = net.Packet(vlan_diff)
         return packet.pushmany(h)
 
-    def get_packet_payload(self, packet):
-        p_begin = p = packetlib.ethernet(packet["payload"])
+
+    def make_pox_arp(self, packet):
+        p = packetlib.ethernet()
+        p.src = packetaddr.EthAddr(packet["srcmac"].to_bytes())
+        p.dst = packetaddr.EthAddr(packet["dstmac"].to_bytes())
         
+        p.type = 2054
+        p.next = packetlib.arp(prev=p)
+        
+        p.next.hwsrc = packetaddr.EthAddr(packet["srcmac"].to_bytes())
+        p.next.hwdst = packetaddr.EthAddr(packet["dstmac"].to_bytes())
+        p.next.protosrc = packetaddr.IPAddr(packet["srcip"].to_bytes())
+        p.next.protodst = packetaddr.IPAddr(packet["dstip"].to_bytes())
+        p.next.opcode = packet['protocol']
+        
+        print "SCRATCH"
+        print p
+
+        return p
+
+    def packet_to_pox(self, packet):
+        if len(packet["payload"]) == 0:
+            return self.make_pox_arp(packet).pack()
+
+        p_begin = p = packetlib.ethernet(packet["payload"])
+
+        print "---------------------"        
+        print "BEGIN"
+        print p_begin
+
+        # ETHERNET PACKET IS OUTERMOST
         p.src = packetaddr.EthAddr(packet["srcmac"].to_bytes())
         p.dst = packetaddr.EthAddr(packet["dstmac"].to_bytes())
 
+        # DEAL WITH ETHERNET VLANS
         diff = get_packet_diff(packet)
+        print "diff"
+        print diff
         if diff:
             if isinstance(p.next, packetlib.vlan):
                 p = p.next
@@ -146,6 +179,7 @@ class POXBackend(revent.EventMixin):
                 p.type = p.next.eth_type # Restore encapsulated eth type
                 p.next = p.next.next # Remove vlan from header
 
+        # GET PACKET INSIDE ETHERNET/VLAN
         p = p.next
         if isinstance(p, packetlib.ipv4):
             p.srcip = packetaddr.IPAddr(packet["srcip"].to_bytes())
@@ -160,10 +194,23 @@ class POXBackend(revent.EventMixin):
             elif isinstance(p, packetlib.icmp):
                 p.type = packet["srcport"]
                 p.code = packet["dstport"]
+            print "AFTER"
+            print p_begin
+
         elif isinstance(p, packetlib.arp):
-            p.opcode = packet["protocol"]
-            p.protosrc = packetaddr.IPAddr(packet["srcip"].to_bytes())
-            p.protodst = packetaddr.IPAddr(packet["dstip"].to_bytes())
+            if diff:
+                p.opcode = packet["protocol"]
+                p.protosrc = packetaddr.IPAddr(packet["srcip"].to_bytes())
+                p.protodst = packetaddr.IPAddr(packet["dstip"].to_bytes())
+                print "AFTER"
+                print p_begin
+            else:
+                print "AFTER"
+                print p_begin
+                p_begin = self.make_pox_arp(packet)
+        
+
+        print "---------------------"
 
         payload = p_begin.pack()
 
@@ -429,7 +476,7 @@ class POXBackend(revent.EventMixin):
             print "dpid\t%s" % event.dpid
             print
 
-        recv_packet = self.create_packet(event.dpid, event.ofp.in_port, event.data)
+        recv_packet = self.packet_from_pox(event.dpid, event.ofp.in_port, event.data)
         
         if self.debug_packet_in == "1":
             ipdb.set_trace()
@@ -462,7 +509,7 @@ class POXBackend(revent.EventMixin):
         
         msg = of.ofp_packet_out()
         msg.in_port = inport
-        msg.data = self.get_packet_payload(packet)
+        msg.data = self.packet_to_pox(packet)
         msg.actions.append(of.ofp_action_output(port = outport))
         
         if self.show_traces:

@@ -32,6 +32,15 @@ from examples.learning_switch import learn
 
 ### 50 ways to write your packet monitor ###
 
+def printer(pkt):
+  print pkt
+
+def dpi():
+  q = packets(None,[])
+  q.when(printer)
+  return q
+
+
 @dynamic
 def monitor_packets(self):
     @self.query(all_packets)
@@ -59,12 +68,12 @@ def monitor_packets_undecorated():
     return dynamic(monitor_packets_undecorated_fn)
 
 @dynamic
-def monitor_packets_explicit_bucket(self):
+def monitor_packets_explicit(self):
     b = packets()
-    self.forwarding |= b
+    self.policy |= b
     @b.when
     def f(pkt):
-        print "(explicit_bucket) I see packet:"
+        print "(explicit_packets) I see packet:"
         print pkt
         print "---------------"
 
@@ -78,7 +87,7 @@ def monitor_packets_lowest_level_syntax():
     return b
 
 
-### packet monitoring w/ other bucket types ###
+### packet monitoring w/ other packets types ###
 
 class monitor_packets_limit_by_src_dst(MutablePolicy):
     def __init__(self, limit=None):
@@ -119,42 +128,30 @@ def monitor_grouped_packet_count(self):
             print "%d:  %s" % (v,k)
 
 
-### Topology monitoring ###
-
-
-# @dynamic
-# def monitor_topology(self):
-#     @self.network._topology.notify
-#     def f(topo):
-#         print "------ monitor topology output start -------"
-#         print topo
-#         print "------ monitor topology output end - -------"
-
-
 ### Examples ###
 
-all_monitor_modules =                           \
-    monitor_packets()                           \
-    | monitor_packets_explicit_bucket()         \
-    | monitor_packets_less_decorated()          \
-    | monitor_packets_undecorated()()           \
-    | monitor_packets_lowest_level_syntax()     \
-    | monitor_packets_limit_by_src_dst(limit=3) \
-    | monitor_unique_packets()                  \
-    | monitor_grouped_packet_count()            \
-    | dynamic(learn)()
+def all_monitor_modules():
+    return monitor_packets()                           \
+        | monitor_packets_explicit()         \
+        | monitor_packets_less_decorated()          \
+        | monitor_packets_undecorated()()           \
+        | monitor_packets_lowest_level_syntax()     \
+        | monitor_packets_limit_by_src_dst(limit=3) \
+        | monitor_unique_packets()                  \
+        | monitor_grouped_packet_count()            \
+        | learning_switch()
 
-summary_modules =                     \
-    monitor_grouped_packet_count()  \
-    | dynamic(learn)()
+def summary_modules():
+    return monitor_grouped_packet_count()  \
+        | learning_switch()
 
-lowest_level_syntax =                      \
-    monitor_packets_lowest_level_syntax()  \
-    | flood
+def lowest_level_syntax():                      
+    return monitor_packets_lowest_level_syntax()  \
+        | flood
 
 
 ### Main ###
 
 def main():
-    return monitor_packets()
+    return summary_modules()
 

@@ -28,7 +28,7 @@
 ############################################################################################################################
 # TO TEST EXAMPLE                                                                                                          #
 # -------------------------------------------------------------------                                                      #
-# start mininet:  sudo mn --switch ovsk --controller remote --mac --topo linear,3                                          #
+# start mininet:  ./pyretic/mininet.sh --switch ovsk --topo clique,4,4                                                     #
 # run controller: pox.py --no-cli pyretic/examples/hub.py                                                                  #
 # start xterms:   xterm h1 h2 h3                                                                                           #
 # start tcpdump:  in each xterm,                                                                                           #
@@ -39,6 +39,7 @@
 
 
 from frenetic.lib import *
+from virttopos.bfs import BFS
 
 hub = flood
 
