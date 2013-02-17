@@ -498,8 +498,9 @@ class POXBackend(revent.EventMixin):
         
         for pkt in output.elements():
             self.send_packet(pkt)
+            self.install_flow(packet, pkt)
 
-                
+
     def send_packet(self, packet):
         switch = packet["switch"]
         inport = packet["inport"]
@@ -528,6 +529,32 @@ class POXBackend(revent.EventMixin):
             print "ERROR:send_packet: No connection to switch %d available" % switch
             # TODO - IF SOCKET RECONNECTION, THEN WAIT AND RETRY
 
+
+    def install_flow(self, pox_original_packet, packet):
+        switch = packet["switch"]
+        inport = packet["inport"]
+        outport = packet["outport"]
+
+        packet = packet.pop("switch", "inport", "outport")
+    
+        pox_packet = packetlib.ethernet(self.packet_to_pox(packet))
+        msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
+                              idle_timeout=of.OFP_FLOW_PERMANENT,
+                              hard_timeout=of.OFP_FLOW_PERMANENT,
+                              match=of.ofp_match.from_packet(pox_packet, inport),
+                              actions=[of.ofp_action_output(port = outport)])
+
+        
+        try:
+            self.switches[switch]['connection'].send(msg)
+        except RuntimeError, e:
+            print "ERROR:install_flow: %s to switch %d" % (str(e),switch)
+            # TODO - ATTEMPT TO RECONNECT SOCKET
+        except KeyError, e:
+            print "ERROR:install_flow: No connection to switch %d available" % switch
+            # TODO - IF SOCKET RECONNECTION, THEN WAIT AND RETRY
+            
+    
         
 def launch(module_dict, show_traces=False, debug_packet_in=False, **kwargs):
     import pox
@@ -552,4 +579,35 @@ def get_packet_diff(packet):
     return util.frozendict(diff)
 
     
-    
+def get_pox_actions(old_pkt, new_pkt):
+    m1 = of.ofp_match.from_packet(old_pkt)
+    m2 = of.ofp_match.from_packet(new_pkt)
+
+    actions = []
+
+    if m1.dl_src != m2.dl_src:
+        actions.append(of.ofp_action_dl_addr.set_src(m1.dl_src))
+    if m1.dl_dst != m2.dl_dst:
+        actions.append(of.ofp_action_dl_addr.set_dst(m1.dl_dst))
+
+
+    if m1.dl_type != 0x8100 and m2.dl_type == 0x8100:
+        actions.append(of.ofp_action_header(type=3)) # strip vlan
+    else:
+        if m1.dl_vlan != m2.dl_vlan:
+            actions.append(of.ofp_action_vlan_vid(vlan_vid=m1.dl_vlan))
+        if m1.dl_vlan_pcp != m2.dl_vlan_pcp:
+            actions.append(of.ofp_action_vlan_pcp(vlan_pcp=m1.dl_vlan_pcp))
+
+    if m2.nw_src is not None and m1.nw_src != m2.nw_src:
+        actions.append(of.ofp_action_nw_addr.set_src(m1.nw_src))
+    if m2.nw_dst is not None and m1.nw_dst != m2.nw_dst:
+        actions.append(of.ofp_action_nw_addr.set_dst(m1.nw_dst))
+    if m2.nw_tos is not None and m1.nw_tos != m2.nw_tos:
+        actions.append(of.ofp_action_nw_tos(nw_tos=m1.nw_tos))
+    if m2.tp_src is not None and m1.tp_src != m2.tp_src:
+        actions.append(of.ofp_action_tp_port.set_src(m1.tp_src))
+    if m2.tp_dst is not None and m1.tp_dst != m2.tp_dst:
+        actions.append(of.ofp_action_tp_port.set_dst(m1.tp_dst))
+
+    return actions
