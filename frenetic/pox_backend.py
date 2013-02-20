@@ -160,7 +160,7 @@ class POXBackend(revent.EventMixin):
         p.dst = packetaddr.EthAddr(packet["dstmac"].to_bytes())
 
         # DEAL WITH ETHERNET VLANS
-        diff = get_packet_diff(packet)
+        diff = categorize_packet(packet)[1]
         print "diff"
         print diff
         if diff:
@@ -498,7 +498,8 @@ class POXBackend(revent.EventMixin):
         
         for pkt in output.elements():
             self.send_packet(pkt)
-            self.install_flow(packet, pkt)
+            
+        self.install_flow(recv_packet, list(output.elements()))
 
 
     def send_packet(self, packet):
@@ -530,31 +531,55 @@ class POXBackend(revent.EventMixin):
             # TODO - IF SOCKET RECONNECTION, THEN WAIT AND RETRY
 
 
-    def install_flow(self, pox_original_packet, packet):
-        switch = packet["switch"]
-        inport = packet["inport"]
-        outport = packet["outport"]
-
-        packet = packet.pop("switch", "inport", "outport")
-    
-        pox_packet = packetlib.ethernet(self.packet_to_pox(packet))
-        msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
-                              idle_timeout=of.OFP_FLOW_PERMANENT,
-                              hard_timeout=of.OFP_FLOW_PERMANENT,
-                              match=of.ofp_match.from_packet(pox_packet, inport),
-                              actions=[of.ofp_action_output(port = outport)])
-
+    def install_flow(self, recv_packet, packets):
+        switch = recv_packet["switch"]
+        inport = recv_packet["inport"]
         
-        try:
-            self.switches[switch]['connection'].send(msg)
-        except RuntimeError, e:
-            print "ERROR:install_flow: %s to switch %d" % (str(e),switch)
-            # TODO - ATTEMPT TO RECONNECT SOCKET
-        except KeyError, e:
-            print "ERROR:install_flow: No connection to switch %d available" % switch
-            # TODO - IF SOCKET RECONNECTION, THEN WAIT AND RETRY
+        recv_packet = recv_packet.pop("switch", "inport") # hack
+        pox_packet = packetlib.ethernet(self.packet_to_pox(recv_packet))
+        compat1, incompat1 = categorize_packet(recv_packet)
+
+        diffs = []
+        for packet in packets:
+            outport = packet["outport"]
+            packet = packet.pop("switch", "inport", "outport")
             
-    
+            compat2, incompat2 = categorize_packet(packet)
+
+            diff = diff_dicts(compat1, compat2)
+            
+            if incompat1 == incompat2:
+                vlan = None
+            elif not incompat2:
+                vlan = "not-virtual"
+            else:
+                vlan = self.vlan_from_diff(incompat2)
+
+            diffs.append((diff, outport, vlan))
+
+        diffs = sort_diffs(diffs)
+        
+        if diffs is not None: # otherwise its not possible
+            actions = []
+            for diff, outport, vlan in diffs:
+                actions.extend(get_pox_actions(diff, vlan))
+                actions.append(of.ofp_action_output(port = outport))
+
+            msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
+                                  idle_timeout=of.OFP_FLOW_PERMANENT,
+                                  hard_timeout=of.OFP_FLOW_PERMANENT,
+                                  match=of.ofp_match.from_packet(pox_packet, inport),
+                                  actions=actions)
+        
+            try:
+                self.switches[switch]['connection'].send(msg)
+            except RuntimeError, e:
+                print "ERROR:install_flow: %s to switch %d" % (str(e),switch)
+                # TODO - ATTEMPT TO RECONNECT SOCKET
+            except KeyError, e:
+                print "ERROR:install_flow: No connection to switch %d available" % switch
+                # TODO - IF SOCKET RECONNECTION, THEN WAIT AND RETRY
+            
         
 def launch(module_dict, show_traces=False, debug_packet_in=False, **kwargs):
     import pox
@@ -569,45 +594,74 @@ pox_valid_headers = ["srcmac", "dstmac", "srcip", "dstip", "tos", "srcport", "ds
                      "type", "protocol", "payload"]
 
 @util.cached
-def get_packet_diff(packet):
-    diff = {}
+def categorize_packet(packet):
+    compat = {}
+    incompat = {}
     for k, v in packet.header.items():
-        if k not in pox_valid_headers and v:
-            diff[k] = v
-        elif len(v) > 1:
-            diff[k] = v[1:]
-    return util.frozendict(diff)
+        if v:
+            if k in pox_valid_headers:
+                compat[k] = v[0]
+                if len(v) > 1:
+                    incompat[k] = v[1:]
+            else:
+                incompat[k] = v
+        
+    return util.frozendict(compat), util.frozendict(incompat)
 
+def order_diff(diff1, diff2):
+    order = 0
+    for k in diff1:
+        if k not in diff2:
+            if order < 1:
+                order = -1
+            else:
+                return None
+    for k in diff2:
+        if k not in diff1:
+            if order > -1:
+                order = 1
+            else:
+                return None
+    return order
+            
+def sort_diffs(diffs):
+    try:
+        return list(sorted(diffs, cmp=lambda x, y: order_diff(x[0], y[0])))
+    except:
+        return None
     
-def get_pox_actions(old_pkt, new_pkt):
-    m1 = of.ofp_match.from_packet(old_pkt)
-    m2 = of.ofp_match.from_packet(new_pkt)
-
+def diff_dicts(old, new):
+    d = {}
+    for k, v in new.iteritems():
+        assert k in old, "can't add or remove fundamental fields"
+        if old[k] != v:
+            d[k] = v
+    return d
+    
+def get_pox_actions(diff, vlan):
     actions = []
+    for k, v in diff.iteritems():
+        if k == "srcmac":
+            actions.append(of.ofp_action_dl_addr.set_src(packetaddr.EthAddr(v.to_bytes())))
+        if k == "dstmac":
+            actions.append(of.ofp_action_dl_addr.set_dst(packetaddr.EthAddr(v.to_bytes())))
+        if k == "srcip":
+            actions.append(of.ofp_action_nw_addr.set_src(packetaddr.IPAddr(v.to_bytes())))
+        if k == "dstip":
+            actions.append(of.ofp_action_nw_addr.set_dst(packetaddr.IPAddr(v.to_bytes())))
+        if k == "tos":
+            actions.append(of.ofp_action_nw_tos(nw_tos=v))
+        if k == "srcport":
+            actions.append(of.ofp_action_tp_port.set_src(v))
+        if k == "dstport":
+            actions.append(of.ofp_action_tp_port.set_dst(v))
 
-    if m1.dl_src != m2.dl_src:
-        actions.append(of.ofp_action_dl_addr.set_src(m1.dl_src))
-    if m1.dl_dst != m2.dl_dst:
-        actions.append(of.ofp_action_dl_addr.set_dst(m1.dl_dst))
-
-
-    if m1.dl_type != 0x8100 and m2.dl_type == 0x8100:
-        actions.append(of.ofp_action_header(type=3)) # strip vlan
-    else:
-        if m1.dl_vlan != m2.dl_vlan:
-            actions.append(of.ofp_action_vlan_vid(vlan_vid=m1.dl_vlan))
-        if m1.dl_vlan_pcp != m2.dl_vlan_pcp:
-            actions.append(of.ofp_action_vlan_pcp(vlan_pcp=m1.dl_vlan_pcp))
-
-    if m2.nw_src is not None and m1.nw_src != m2.nw_src:
-        actions.append(of.ofp_action_nw_addr.set_src(m1.nw_src))
-    if m2.nw_dst is not None and m1.nw_dst != m2.nw_dst:
-        actions.append(of.ofp_action_nw_addr.set_dst(m1.nw_dst))
-    if m2.nw_tos is not None and m1.nw_tos != m2.nw_tos:
-        actions.append(of.ofp_action_nw_tos(nw_tos=m1.nw_tos))
-    if m2.tp_src is not None and m1.tp_src != m2.tp_src:
-        actions.append(of.ofp_action_tp_port.set_src(m1.tp_src))
-    if m2.tp_dst is not None and m1.tp_dst != m2.tp_dst:
-        actions.append(of.ofp_action_tp_port.set_dst(m1.tp_dst))
+    if vlan == "not-virtual":
+        actions.append(of.ofp_action_header(type=3))
+    elif vlan is not None:
+        assert len(vlan) == 2, "if not not-virtual or None must be a seq of len 2"
+        vid, pcp = vlan
+        actions.append(of.ofp_action_vlan_vid(vlan_vid=vid))
+        actions.append(of.ofp_action_vlan_pcp(vlan_pcp=pcp))
 
     return actions
