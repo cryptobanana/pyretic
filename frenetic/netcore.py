@@ -322,6 +322,9 @@ class Predicate(object):
     def __ne__(self, other):
         raise NotImplementedError
 
+    def tolerance(self, network, packet):
+        raise NotImplementedError
+
     def update_network(self, network):
         raise NotImplementedError
         
@@ -335,25 +338,41 @@ class Predicate(object):
     def eval(self, network, packet):
         raise NotImplementedError
 
+    def evalmany(self, network, packets):
+        raise NotImplementedError
 
-class DerivedPredicate(Predicate):
+
+class AggregatePredicate(Predicate):
+    def tolerance(self, network, packet):
+        return min(pred.tolerance(network, packet) for pred in self.children)
+        
+    def attach(self, network):
+        for pred in self.children:
+            pred.attach(network)
+
+    def update_network(self, network):
+        for pred in self.children:
+            pred.update_network(network)
+            
+    def detach(self, network):
+        for pred in self.children:
+            pred.detach(network)
+
+            
+class DerivedPredicate(AggregatePredicate):
     ### repr : unit -> String
     def __repr__(self):
         return repr(self.predicate)
 
-    def update_network(self, network):
-        self.predicate.update_network(network)
-        
-    def attach(self, network):
-        self.predicate.attach(network)
-
+    @property
+    def children(self):
+        return [self.predicate]
+    
     def eval(self, network, packet):
         return self.predicate.eval(network, packet)
-
-    def detach(self, network):
-        self.predicate.detach(network)
         
 
+# TODO this is more of a "pure predicate"
 class SimplePredicate(Predicate):
     def update_network(self, network):
         pass
@@ -455,60 +474,44 @@ class match(SimplePredicate):
         return True
 
         
-class union(Predicate):
+class union(AggregatePredicate):
     """A predicate representing the union of a list of predicates."""
 
     ### init : List Predicate -> unit
     def __init__(self, predicates):
         self.predicates = list(predicates)
+
+    @property
+    def children(self):
+        return self.predicates
         
     ### repr : unit -> String
     def __repr__(self):
         return "union:\n%s" % util.repr_plus(self.predicates)
 
-    def update_network(self, network):
-        for pred in self.predicates:
-            pred.update_network(network)
-        
-    def attach(self, network):
-        for pred in self.predicates:
-            pred.attach(network)
-            
     def eval(self, network, packet):
         return any(predicate.eval(network, packet) for predicate in self.predicates)
 
-    def detach(self, network):
-        for pred in self.predicates:
-            pred.detach(network)
-
         
-class intersect(Predicate):
+class intersect(AggregatePredicate):
     """A predicate representing the intersection of a list of predicates."""
 
     def __init__(self, predicates):
         self.predicates = list(predicates)
+
+    @property
+    def children(self):
+        return self.predicates
         
     ### repr : unit -> String
     def __repr__(self):
         return "intersect:\n%s" % util.repr_plus(self.predicates)
-
-    def update_network(self, network):
-        for pred in self.predicates:
-            pred.update_network(network)
-            
-    def attach(self, network):
-        for pred in self.predicates:
-            pred.attach(network)
             
     def eval(self, network, packet):
         return all(predicate.eval(network, packet) for predicate in self.predicates)
+        
 
-    def detach(self, network):
-        for pred in self.predicates:
-            pred.detach(network)
-    
-
-class difference(Predicate):
+class difference(AggregatePredicate):
     """A predicate representing the difference of two predicates."""
 
     ### init : Predicate -> List Predicate -> unit
@@ -521,29 +524,17 @@ class difference(Predicate):
         return "difference:\n%s" % util.repr_plus([self.base_predicate,
                                                    self.diff_predicates])
 
-    def update_network(self, network):
-        self.base_predicate.update_network(network)
-        for pred in self.diff_predicates:
-            pred.update_network(network)
-            
-    ### attach : Network -> (Packet -> bool)
-    def attach(self, network):
-        self.base_predicate.attach(network)
-        for pred in self.diff_predicates:
-            pred.attach(network)
-        
+    @property
+    def children(self):
+        return [self.base_predicate] + self.predicates
+
     def eval(self, network, packet):
         return self.base_predicate.eval(network, packet) and not \
             any(pred.eval(network, packet)
                 for pred in self.diff_predicates)
 
-    def detach(self, network):
-        self.base_predicate.detach(network)
-        for pred in self.diff_predicates:
-            pred.detach(network)
-        
 
-class negate(Predicate):
+class negate(AggregatePredicate):
     """A predicate representing the difference of two predicates."""
 
     ### init : Predicate -> unit
@@ -554,19 +545,13 @@ class negate(Predicate):
     def __repr__(self):
         return "negate:\n%s" % util.repr_plus([self.predicate])
 
-    def update_network(self, network):
-        self.predicate.attach(network)
-    
-    ### attach : Network -> (Packet -> bool)
-    def attach(self, network):
-        self.predicate.attach(network)
+    @property
+    def children(self):
+        return [self.predicate]
         
-        ### eval : Packet -> bool
+    ### eval : Packet -> bool
     def eval(self, network, packet):
         return not self.predicate.eval(network, packet)
-
-    def detach(self, network):
-        self.predicate.detach(network)
         
         
 ################################################################################
