@@ -374,6 +374,9 @@ class DerivedPredicate(AggregatePredicate):
 
 # TODO this is more of a "pure predicate"
 class SimplePredicate(Predicate):
+    def tolerance(self, network, packet):
+        return float("inf")
+        
     def update_network(self, network):
         pass
         
@@ -585,6 +588,9 @@ class Policy(object):
     def __ne__(self, other):
         raise NotImplementedError
 
+    def tolerance(self, network, packet):
+        raise NotImplementedError
+
     def update_network(self, network):
         raise NotImplementedError
     
@@ -597,8 +603,28 @@ class Policy(object):
     def detach(self, network):
         raise NotImplementedError
 
+
+class AggregatePolicy(Policy):
+    def tolerance(self, network, packet):
+        return min(pol.tolerance(network, packet) for pol in self.children)
+        
+    def attach(self, network):
+        for pol in self.children:
+            pol.attach(network)
+
+    def update_network(self, network):
+        for pol in self.children:
+            pol.update_network(network)
+            
+    def detach(self, network):
+        for pol in self.children:
+            pol.detach(network)
+        
         
 class SimplePolicy(Policy):
+    def tolerance(self, network, packet):
+        return float("inf")
+        
     def update_network(self, network):
         pass
         
@@ -609,22 +635,17 @@ class SimplePolicy(Policy):
         pass
         
 
-class DerivedPolicy(Policy):
+class DerivedPolicy(AggregatePolicy):
     ### repr : unit -> String
     def __repr__(self):
         return repr(self.policy)
 
-    def update_network(self, network):
-        self.policy.update_network(network)
-
-    def attach(self, network):
-        self.policy.attach(network)
-
+    @property
+    def children(self):
+        return [self.policy]
+    
     def eval(self, network, packet):
         return self.policy.eval(network, packet)
-
-    def detach(self, network):
-        self.policy.detach(network)
 
 
 class pprint(SimplePolicy):
@@ -816,7 +837,7 @@ class overwrite(SimplePolicy):
         return Counter([packet])
 
         
-class remove(Policy):
+class remove(AggregatePolicy):
     ### init : Policy -> Predicate -> unit
     def __init__(self, policy, predicate):
         self.policy = policy
@@ -826,14 +847,9 @@ class remove(Policy):
     def __repr__(self):
         return "remove:\n%s" % util.repr_plus([self.predicate, self.policy])
 
-    def update_network(self, network):
-        self.predicate.update_network(network)
-        self.policy.update_network(network)
-        
-    ### attach : Network -> (Packet -> Counter List Packet)
-    def attach(self, network):
-        self.predicate.attach(network)
-        self.policy.attach(network)
+    @property
+    def children(self):
+        return [self.predicate, self.policy]
 
     ### eval : Packet -> Counter List Packet
     def eval(self, network, packet):
@@ -841,10 +857,6 @@ class remove(Policy):
             return self.policy.eval(network, packet)
         else:
             return Counter()
-            
-    def detach(self, network):
-        self.predicate.detach(network)
-        self.policy.detach(network)
         
 
 class restrict(Policy):
@@ -858,14 +870,9 @@ class restrict(Policy):
         return "restrict:\n%s" % util.repr_plus([self.predicate,
                                                  self.policy])
 
-    def update_network(self, network):
-        self.predicate.update_network(network)
-        self.policy.update_network(network)
-
-    ### attach : Network -> (Packet -> Counter List Packet)
-    def attach(self, network):
-        self.predicate.attach(network)
-        self.policy.attach(network)
+    @property
+    def children(self):
+        return [self.predicate, self.policy]
 
     ### eval : Packet -> Counter List Packet
     def eval(self, network, packet):
@@ -873,11 +880,7 @@ class restrict(Policy):
             return self.policy.eval(network, packet)
         else:
             return Counter()
-            
-    def detach(self, network):
-        self.predicate.detach(network)
-        self.policy.detach(network)
- 
+    
 
 class parallel(Policy):
     ### init : List Policy -> unit
@@ -888,17 +891,9 @@ class parallel(Policy):
     def __repr__(self):
         return "parallel:\n%s" % util.repr_plus(self.policies)
 
-    def update_network(self, network):
-        for policy in self.policies:
-            policy.update_network(network)
-
-    def attach(self, network):
-        for policy in self.policies:
-            policy.attach(network)
-
-    def detach(self, network):
-        for policy in self.policies:
-            policy.attach(network)
+    @property
+    def children(self):
+        return self.policies
             
     def eval(self, network, packet):
         c = Counter()
@@ -917,17 +912,9 @@ class sequential(Policy):
     def __repr__(self):
         return "sequential:\n%s" % util.repr_plus(self.policies)
 
-    def update_network(self, network):
-        for policy in self.policies:
-            policy.update_network(network)
-
-    def attach(self, network):
-        for policy in self.policies:
-            policy.attach(network)
-
-    def detach(self, network):
-        for policy in self.policies:
-            policy.attach(network)
+    @property
+    def children(self):
+        return self.policies
 
     def eval(self, network, packet):
         lc = Counter([packet])
@@ -1151,6 +1138,32 @@ def dynamic(fn):
     DecoratedPolicy.__name__ = fn.__name__
     return DecoratedPolicy
  
+
+class Query(SimplePolicy):
+    def __init__(self):
+        self.listeners = []
+
+    def tolerance(self, network, packet):
+        return 0
+    
+    def eval(self, network, packet):
+        for listener in self.listeners:
+            listener(packet)
+        return Counter()
+    
+    def when(self, fn):
+        self.listeners.append(fn)
+        return fn
+
+
+class packets2(Query):
+    def __init__(self, interval):
+        self.interval = interval
+        Query.__init__(self)
+    
+    def tolerance(self, network, packet):
+        return self.interval
+
         
 class queries_base(SimplePolicy):
     ### init : unit -> unit

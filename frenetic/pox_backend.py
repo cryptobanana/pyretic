@@ -36,6 +36,7 @@ from pox.lib.packet.ethernet      import ethernet
 from pox.lib.packet.ethernet      import LLDP_MULTICAST, NDP_MULTICAST
 from pox.lib.packet.lldp          import lldp, chassis_id, port_id, end_tlv
 from pox.lib.packet.lldp          import ttl, system_description
+from pox.lib.recoco import Timer
 
 from frenetic import generators as gs, network as net, virt, util
 
@@ -499,9 +500,37 @@ class POXBackend(revent.EventMixin):
         for pkt in output.elements():
             self.send_packet(pkt)
             
-        self.install_flow(recv_packet, list(output.elements()))
+        tolerance = self.policy.tolerance(self.network, recv_packet)
 
+        # Non-trivial tolerance; install a query.
+        if 0 < tolerance < float("inf"):
+            Timer(tolerance, self.handle_timer, recurring=True, args=[switch, recv_packet])
+            
+        # Install a flow if we can tolerate it.
+        if tolerance > 0:
+            self.install_flow(recv_packet, list(output.elements()))
+    
+    def handle_timer(self, switch, recv_packet):
+        msg = of.ofp_stats_request(body=of.ofp_flow_stats_request())
+        
+        try:
+            self.switches[switch]['connection'].send(msg)
+        except RuntimeError, e:
+            print "ERROR:handle_timer: %s to switch %d" % (str(e),switch)
+            # TODO - ATTEMPT TO RECONNECT SOCKET
+        except KeyError, e:
+            print "ERROR:handle_timer: No connection to switch %d available" % switch
+            # TODO - IF SOCKET RECONNECTION, THEN WAIT AND RETRY
 
+        
+    def _handle_FlowStatsReceived(self, event):
+        for flow_stats in event.stats:
+            packets = Counter()
+            # flow_stats.match to packet
+            # duplicate to flow_stats.packet_count
+            self.policy.evalmany(self.network, packets)
+            
+            
     def send_packet(self, packet):
         switch = packet["switch"]
         inport = packet["inport"]
